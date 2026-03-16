@@ -97,6 +97,8 @@ def list_scripts(args) -> List[str]:
 # SQL extraction
 # -----------------------------
 _SQL_STMT_SPLIT_RE = re.compile(r";\s*(?:\n|$)", re.MULTILINE)
+# Strip shell variable database prefixes: $DBNAME.TABLE -> TABLE
+_SHELL_DB_PREFIX_RE = re.compile(r'\$\{?[A-Za-z_]\w*\}?\.')
 
 
 def extract_sql_statements(script_text: str) -> List[Tuple[int, str]]:
@@ -110,6 +112,8 @@ def extract_sql_statements(script_text: str) -> List[Tuple[int, str]]:
         lines.append(ln)
 
     joined = "\n".join(lines).strip()
+    # Remove shell variable database prefixes so $DBNAME.CLM becomes CLM
+    joined = _SHELL_DB_PREFIX_RE.sub("", joined)
     if not joined:
         return []
 
