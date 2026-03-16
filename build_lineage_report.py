@@ -65,6 +65,16 @@ def _narrative_for_column(
     parts = []
 
     if chains:
+        # Deduplicate chains by content before rendering
+        seen_keys = set()
+        unique_chains = []
+        for chain in chains:
+            key = json.dumps(chain, sort_keys=True)
+            if key not in seen_keys:
+                seen_keys.add(key)
+                unique_chains.append(chain)
+        chains = unique_chains
+
         # One paragraph per chain
         for chain in chains:
             ult_src = chain["ultimate_source"]
