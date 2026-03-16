@@ -165,9 +165,7 @@ def classify_statement(stmt: str) -> str:
 
 
 # -----------------------------
-# Simplified fallback parser
-# Used when full parser is bypassed (StatementTooLarge) or times out (ParseTimeout).
-# Captures table-level lineage only — no column mapping.
+# Table-name helpers (used by both positional and simplified parsers)
 # -----------------------------
 _WS = r'[\s\n\r]+'
 _ID = r'[A-Za-z0-9_$.]+'
@@ -177,11 +175,168 @@ _UPDATE_TARGET_RE  = re.compile(r'UPDATE\s+(' + _ID + r')', re.I)
 _FROM_TABLE_RE     = re.compile(r'(?:FROM|JOIN)\s+(' + _ID + r')', re.I)
 _SET_FROM_RE       = re.compile(r'FROM\s+(' + _ID + r')', re.I)   # UPDATE ... FROM
 
+# SQL keywords to exclude when extracting column references from expressions
+_SQL_KEYWORDS = {
+    "CASE","WHEN","THEN","ELSE","END","AND","OR","NOT","IN","IS","NULL","AS",
+    "SELECT","FROM","WHERE","JOIN","LEFT","RIGHT","INNER","OUTER","ON","COALESCE",
+    "TRIM","CAST","SUBSTR","SUBSTRING","UPPER","LOWER","LENGTH","CHAR","VARCHAR",
+    "DATE","INTEGER","DECIMAL","FLOAT","BETWEEN","LIKE","EXISTS","DISTINCT",
+    "GROUP","BY","HAVING","ORDER","QUALIFY","OVER","PARTITION","ROW_NUMBER",
+    "RANK","SUM","COUNT","MAX","MIN","AVG","EXTRACT","YEAR","MONTH","DAY",
+    "INTERVAL","TIMESTAMP","FORMAT","NAMED","TITLE","COMPRESS","INSERT","INTO",
+    "VALUES","UPDATE","SET","DELETE","MERGE","USING","MATCHED","TARGET","SOURCE",
+    "TRUE","FALSE","ZEROIFNULL","NULLIFZERO","INDEX","REPLACE","CHAR_LENGTH",
+}
+
+
+def _split_top_level_commas(text: str) -> List[str]:
+    """Split by commas at depth 0 (not inside parentheses)."""
+    parts: List[str] = []
+    depth = 0
+    current: List[str] = []
+    for ch in text:
+        if ch == "(":
+            depth += 1
+            current.append(ch)
+        elif ch == ")":
+            depth -= 1
+            current.append(ch)
+        elif ch == "," and depth == 0:
+            parts.append("".join(current).strip())
+            current = []
+        else:
+            current.append(ch)
+    if current:
+        parts.append("".join(current).strip())
+    return [p for p in parts if p]
+
+
+def _extract_col_refs_from_expr(expr: str) -> List[str]:
+    """Pull TABLE.COLUMN or COLUMN identifiers from an expression, skipping keywords."""
+    expr_clean = re.sub(r"'[^']*'", " ", expr)
+    tokens = re.findall(r'\b([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)?)\b', expr_clean)
+    seen: set = set()
+    result: List[str] = []
+    for tok in tokens:
+        parts = tok.split(".")
+        if all(p.upper() in _SQL_KEYWORDS for p in parts):
+            continue
+        if tok.replace(".", "").isdigit():
+            continue
+        up = tok.upper()
+        if up not in seen:
+            seen.add(up)
+            result.append(up)
+    return result
+
+
+def _parse_insert_positional(stmt: str) -> Optional[Dict]:
+    """
+    Positional parser for INSERT INTO target (col_list) SELECT expr_list FROM ...
+    Matches INSERT column N to SELECT expression N to produce column-level lineage.
+    Returns None if the pattern is not recognised.
+    """
+    ins_m = re.search(r'INSERT\s+(?:INTO\s+)?(\S+)\s*\(', stmt, re.IGNORECASE)
+    if not ins_m:
+        return None
+    target_table = ins_m.group(1)
+
+    # Extract INSERT column list (inside the first top-level parens after table name)
+    start = stmt.index("(", ins_m.start())
+    depth = 0
+    i = start
+    while i < len(stmt):
+        if stmt[i] == "(": depth += 1
+        elif stmt[i] == ")":
+            depth -= 1
+            if depth == 0:
+                break
+        i += 1
+    col_list_raw = stmt[start + 1:i]
+    after_cols = stmt[i + 1:]
+
+    # Find SELECT after the closing paren
+    sel_m = re.search(r'\bSELECT\b', after_cols, re.IGNORECASE)
+    if not sel_m:
+        return None
+    sel_body = after_cols[sel_m.end():]
+
+    # Find FROM at depth 0 to delimit the SELECT expression list
+    depth = 0
+    from_pos = None
+    j = 0
+    while j < len(sel_body):
+        if sel_body[j] == "(":
+            depth += 1
+        elif sel_body[j] == ")":
+            depth -= 1
+        elif depth == 0:
+            chunk = sel_body[j:j + 4].upper()
+            if chunk == "FROM":
+                before_ok = j == 0 or not sel_body[j - 1].isalnum()
+                after_ok = j + 4 >= len(sel_body) or not sel_body[j + 4].isalnum()
+                if before_ok and after_ok:
+                    from_pos = j
+                    break
+        j += 1
+
+    select_exprs_raw = sel_body[:from_pos] if from_pos is not None else sel_body
+
+    # Strip block comments from column list
+    col_list_clean = re.sub(r'/\*.*?\*/', '', col_list_raw, flags=re.DOTALL)
+    col_names = _split_top_level_commas(col_list_clean)
+    col_names = [c.strip() for c in col_names if c.strip()]
+
+    select_exprs = _split_top_level_commas(select_exprs_raw)
+
+    if not col_names or not select_exprs:
+        return None
+    if len(col_names) != len(select_exprs):
+        # Mismatch — still emit what we can, up to the shorter list
+        pass
+
+    column_semantics = []
+    for idx, col in enumerate(col_names):
+        if idx >= len(select_exprs):
+            break
+        expr = select_exprs[idx].strip()
+        # Strip trailing alias (AS name)
+        expr_clean = re.sub(r'\bAS\s+\w+\s*$', '', expr, flags=re.IGNORECASE).strip()
+        refs = _extract_col_refs_from_expr(expr_clean)
+        # Format refs as TABLE.COLUMN where possible
+        base_sources = [r for r in refs if "." in r]
+        if not base_sources:
+            base_sources = [r for r in refs if r.upper() not in _SQL_KEYWORDS]
+
+        column_semantics.append({
+            "target_column": f"{target_table}.{col}",
+            "base_sources": base_sources,
+            "resolved_expression": expr_clean[:300],
+            "classification": "DIRECT" if len(base_sources) == 1 else ("DERIVED" if base_sources else "CONSTANT"),
+        })
+
+    if not column_semantics:
+        return None
+
+    source_tables = list(dict.fromkeys(
+        t for t in _FROM_TABLE_RE.findall(stmt)
+        if t.upper() != target_table.upper()
+    ))
+
+    return {
+        "parse_mode": "positional",
+        "target_table": target_table,
+        "source_tables": source_tables,
+        "column_semantics": column_semantics,
+        "notes": [f"Positional parser: {len(column_semantics)} columns mapped"],
+    }
+
 
 def _parse_insert_simplified(stmt: str) -> Dict:
+    """Last-resort fallback: table-level lineage only, no column mapping."""
     m = _INSERT_TARGET_RE.search(stmt)
     target = m.group(1) if m else "UNKNOWN"
-    sources = list(dict.fromkeys(                        # preserve order, dedupe
+    sources = list(dict.fromkeys(
         t for t in _FROM_TABLE_RE.findall(stmt)
         if t.upper() != target.upper()
     ))
@@ -190,7 +345,7 @@ def _parse_insert_simplified(stmt: str) -> Dict:
         "target_table": target,
         "source_tables": sources,
         "column_mappings": [],
-        "notes": ["Column-level mapping unavailable: statement too large or timed out for full parser"],
+        "notes": ["Column-level mapping unavailable: positional parser could not parse structure"],
     }
 
 
@@ -293,17 +448,31 @@ def process_script(
         if stype == "INSERT":
             insert_total += 1
             if too_large or _will_timeout(clean_stmt):
-                node["semantic_parse"] = _parse_insert_simplified(clean_stmt)
-                node["dq"] = None
-                node["parse_note"] = f"SimplifiedParse: {'too large' if too_large else 'concat-chain pattern detected'}"
+                # Skip full sqlglot parser — use positional parser instead
+                pos = _parse_insert_positional(clean_stmt)
+                if pos:
+                    node["semantic_parse"] = pos
+                    node["dq"] = None
+                    reason = "too large" if too_large else "concat-chain pattern detected"
+                    node["parse_note"] = f"PositionalParse: {reason}"
+                else:
+                    node["semantic_parse"] = _parse_insert_simplified(clean_stmt)
+                    node["dq"] = None
+                    node["parse_note"] = f"SimplifiedParse: positional parser failed"
                 insert_ok += 1
             else:
                 sem, err = _parse_with_timeout(parse_insert_semantics, clean_stmt, column_dictionary, stmt_timeout)
                 if err:
-                    # Full parser failed — try simplified fallback
-                    node["semantic_parse"] = _parse_insert_simplified(clean_stmt)
-                    node["dq"] = None
-                    node["parse_note"] = f"SimplifiedParse: full parser failed ({err})"
+                    # Full parser failed — try positional before simplified
+                    pos = _parse_insert_positional(clean_stmt)
+                    if pos:
+                        node["semantic_parse"] = pos
+                        node["dq"] = None
+                        node["parse_note"] = f"PositionalParse: full parser failed ({err})"
+                    else:
+                        node["semantic_parse"] = _parse_insert_simplified(clean_stmt)
+                        node["dq"] = None
+                        node["parse_note"] = f"SimplifiedParse: full parser failed ({err})"
                     insert_ok += 1
                 else:
                     node["semantic_parse"] = sem
