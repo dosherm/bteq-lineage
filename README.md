@@ -6,12 +6,15 @@ Reads Teradata BTEQ shell scripts and produces an HTML report showing how data f
 
 ## First-time setup
 
-Run this once to create the Python environment:
+Run these commands once to create and set up the Python environment:
 
 ```bash
 python3 -m venv .venv
-.venv/bin/pip install sqlglot
+source .venv/bin/activate
+pip install sqlglot
 ```
+
+After this you can deactivate the environment — the tool calls Python directly and does not need it active to run.
 
 ---
 
