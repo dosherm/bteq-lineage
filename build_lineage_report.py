@@ -84,7 +84,7 @@ def _narrative_for_column(
             ult_tbl, ult_col = _split_col(ult_src)
             hop_word = "step" if hops == 1 else f"{hops}-step transformation"
 
-            sentences = [
+            lines = [
                 f"<strong>{_esc(col_name)}</strong> originates from "
                 f"<code>{_esc(ult_src)}</code> through a {hop_word}."
             ]
@@ -97,13 +97,13 @@ def _narrative_for_column(
                 h_cls = hop["classification"]
 
                 badge = _classification_badge(h_cls)
-                sentences.append(
-                    f"<em>Step {h_num}</em> ({h_stype}): "
+                lines.append(
+                    f"&nbsp;&nbsp;&nbsp;&nbsp;<em>Step {h_num}</em> ({h_stype}): "
                     f"<code>{_esc(h_expr)}</code> {badge} "
-                    f"→ <code>{_esc(h_tgt)}</code>."
+                    f"→ <code>{_esc(h_tgt)}</code>"
                 )
 
-            parts.append("<p>" + " ".join(sentences) + "</p>")
+            parts.append("<p>" + "<br>".join(lines) + "</p>")
 
     elif unresolved_edges:
         # No resolved chain — explain why
