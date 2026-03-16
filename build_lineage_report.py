@@ -65,11 +65,16 @@ def _narrative_for_column(
     parts = []
 
     if chains:
-        # Deduplicate chains by content before rendering
+        # Deduplicate chains by visible content only (ignore metadata fields like source script)
         seen_keys = set()
         unique_chains = []
         for chain in chains:
-            key = json.dumps(chain, sort_keys=True)
+            path_key = tuple(
+                (h.get("hop"), h.get("resolved_expression"), h.get("target_column"),
+                 h.get("classification"), h.get("statement_type"))
+                for h in chain.get("path", [])
+            )
+            key = (chain.get("ultimate_source"), chain.get("hops"), path_key)
             if key not in seen_keys:
                 seen_keys.add(key)
                 unique_chains.append(chain)
