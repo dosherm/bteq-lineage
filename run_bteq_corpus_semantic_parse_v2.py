@@ -726,7 +726,8 @@ def main() -> int:
                 logger.warning(f"  {script_name}: {total_fail} parse failure(s)")
 
         # Check for 10% milestone
-        done_count = sum(1 for r in checkpoint.values() if not r.get("_skipped"))
+        all_names = {os.path.basename(p) for p in all_paths}
+        done_count = sum(1 for name, r in checkpoint.items() if name in all_names and not r.get("_skipped"))
         current_pct = int((done_count / total) * 100) if total else 100
         milestone = (current_pct // _MILESTONE_PCT) * _MILESTONE_PCT
         if milestone > last_milestone_pct and milestone > 0:
@@ -742,8 +743,9 @@ def main() -> int:
     # Final summary
     print("\n" + "=" * 110, flush=True)
     print(_progress_bar(total, total), flush=True)
-    done_count = sum(1 for r in checkpoint.values() if not r.get("_skipped"))
-    skip_count = sum(1 for r in checkpoint.values() if r.get("_skipped"))
+    all_names = {os.path.basename(p) for p in all_paths}
+    done_count = sum(1 for name, r in checkpoint.items() if name in all_names and not r.get("_skipped"))
+    skip_count = sum(1 for name, r in checkpoint.items() if name in all_names and r.get("_skipped"))
     total_fail = rt_ins_fail + rt_cre_fail + rt_upd_fail + rt_mrg_fail
     summary_line = (
         f"DONE  {done_count} scripts | {rt_stmts} stmts | "
