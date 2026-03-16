@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+output/
+*.checkpoint.jsonl
+*.log
+output_*.json
+output_*.html
