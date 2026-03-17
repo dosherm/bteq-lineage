@@ -70,8 +70,8 @@ def _narrative_for_column(
         unique_chains = []
         for chain in chains:
             path_key = tuple(
-                (h.get("hop"), h.get("resolved_expression"), h.get("target_column"),
-                 h.get("classification"), h.get("statement_type"))
+                (h.get("hop"), h.get("source_column"), h.get("target_column"),
+                 h.get("classification"), h.get("statement_type"), h.get("script_name"))
                 for h in chain.get("path", [])
             )
             key = (chain.get("ultimate_source"), chain.get("hops"), path_key)
@@ -101,17 +101,20 @@ def _narrative_for_column(
                 h_stype = hop["statement_type"]
                 h_expr = hop.get("resolved_expression", "")
                 h_cls = hop["classification"]
+                h_script = hop.get("script_name", "")
 
                 badge = _classification_badge(h_cls)
-                # Show the immediate source column so steps logically connect.
-                # If the resolved expression differs (e.g. a function or CASE), show it too.
                 expr_part = f"<code>{_esc(h_src)}</code>"
                 if h_expr and h_expr != h_src:
                     expr_part += f" <em style='color:#888;font-size:11px;'>expr: {_esc(h_expr)}</em>"
+                script_tag = (
+                    f" <span style='color:#999;font-size:11px;'>📄 {_esc(h_script)}</span>"
+                    if h_script else ""
+                )
                 lines.append(
                     f"&nbsp;&nbsp;&nbsp;&nbsp;<em>Step {h_num}</em> ({h_stype}): "
                     f"{expr_part} {badge} "
-                    f"→ <code>{_esc(h_tgt)}</code>"
+                    f"→ <code>{_esc(h_tgt)}</code>{script_tag}"
                 )
 
             parts.append("<p>" + "<br>".join(lines) + "</p>")

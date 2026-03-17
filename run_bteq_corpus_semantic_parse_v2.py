@@ -750,6 +750,14 @@ def main() -> int:
         help="Discard existing checkpoint and start fresh",
     )
     ap.add_argument(
+        "--files",
+        default=None,
+        help="Comma-separated list of script filenames to (re)parse selectively, "
+             "e.g. --files CLM_BTEQ_EDW_CLM_LOAD.sh,OTHER_SCRIPT.sh  "
+             "Removes those entries from the checkpoint and reprocesses only them, "
+             "leaving all other previously parsed scripts intact.",
+    )
+    ap.add_argument(
         "--log",
         default=None,
         help="Log file path (default: <out>.log)",
@@ -799,10 +807,34 @@ def main() -> int:
         print("Checkpoint reset.", flush=True)
 
     checkpoint = load_checkpoint(checkpoint_path)
-    already_done = len(checkpoint)
-    if already_done:
-        logger.info(f"Resuming: {already_done} already done, {total - already_done} remaining")
-        print(f"Resuming: {already_done} scripts already in checkpoint, {total - already_done} remaining.\n", flush=True)
+
+    # Selective re-run: evict named files from checkpoint so they get reprocessed,
+    # then restrict all_paths to only those files.
+    if args.files:
+        target_names = {f.strip() for f in args.files.split(",") if f.strip()}
+        evicted = [n for n in target_names if n in checkpoint]
+        for name in evicted:
+            del checkpoint[name]
+        if evicted:
+            # Rewrite checkpoint file without the evicted entries
+            with open(checkpoint_path, "w", encoding="utf-8") as f:
+                for rec in checkpoint.values():
+                    f.write(json.dumps(rec) + "\n")
+            logger.info(f"Selective re-run: evicted {evicted} from checkpoint")
+            print(f"Selective re-run: removed {evicted} from checkpoint, will reparse.", flush=True)
+        # Restrict the file list to only the named files
+        all_paths = [p for p in all_paths if os.path.basename(p) in target_names]
+        not_found = target_names - {os.path.basename(p) for p in all_paths}
+        if not_found:
+            print(f"WARNING: these files were not found in the directory: {sorted(not_found)}", flush=True)
+        total = len(all_paths)
+        print(f"Selective mode: processing {total} file(s): {[os.path.basename(p) for p in all_paths]}", flush=True)
+
+    already_done = sum(1 for r in checkpoint.values() if not r.get("_skipped"))
+    remaining = total - sum(1 for p in all_paths if os.path.basename(p) in checkpoint)
+    if already_done and not args.files:
+        logger.info(f"Resuming: {already_done} already done, {remaining} remaining")
+        print(f"Resuming: {already_done} scripts already in checkpoint, {remaining} remaining.\n", flush=True)
 
     # Determine input descriptor
     if args.dir:

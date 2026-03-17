@@ -143,6 +143,7 @@ def build_chains(edges: List[dict]) -> List[dict]:
                             "statement_type": e["statement_type"],
                             "resolved_expression": e["resolved_expression"],
                             "classification": e["classification"],
+                            "script_name": e.get("script_name", ""),
                         }
                         for i, e in enumerate(path)
                     ],
