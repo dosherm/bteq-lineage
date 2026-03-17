@@ -125,14 +125,24 @@ def build_chains(edges: List[dict]) -> List[dict]:
     root_cols = all_sources - all_targets
 
     chains: List[dict] = []
+    # Track (ultimate_source, ultimate_target) pairs already recorded.
+    # We only keep the first (shortest) path found for each pair — this prevents
+    # combinatorial explosion when many intermediate nodes fan out.
+    seen_pairs: Set[tuple] = set()
 
     def dfs(col: str, path: List[dict], visited: Set[str]):
         next_edges = forward.get(col, [])
         if not next_edges:
             if path:
+                ult_src = path[0]["source_column"]
+                ult_tgt = path[-1]["target_column"]
+                pair = (ult_src, ult_tgt)
+                if pair in seen_pairs:
+                    return
+                seen_pairs.add(pair)
                 chains.append({
-                    "ultimate_source": path[0]["source_column"],
-                    "ultimate_target": path[-1]["target_column"],
+                    "ultimate_source": ult_src,
+                    "ultimate_target": ult_tgt,
                     "hops": len(path),
                     "path": [
                         {
